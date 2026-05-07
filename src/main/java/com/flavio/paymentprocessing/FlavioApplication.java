@@ -1,4 +1,4 @@
-package Payment_processing_api.flavio;
+package com.flavio.paymentprocessing;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
