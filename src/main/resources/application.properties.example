@@ -1,0 +1,14 @@
+spring.application.name=payment-processing-api
+
+spring.datasource.url=jdbc:postgresql://localhost:5432/payment_processing
+spring.datasource.username=postgres
+spring.datasource.password=your_password_here
+
+spring.jpa.hibernate.ddl-auto=validate
+spring.jpa.show-sql=true
+
+spring.flyway.enabled=true
+
+springdoc.swagger-ui.path=/swagger-ui.html
+
+management.endpoints.web.exposure.include=health,info,metrics
