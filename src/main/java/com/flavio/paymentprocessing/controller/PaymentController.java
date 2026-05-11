@@ -19,14 +19,20 @@ public class PaymentController {
     private final PaymentService paymentService;
     private final UserRepository userRepository;
 
-    @PostMapping
-    public PaymentResponseDTO createPayment(
-            @RequestBody CreatePaymentRequestDTO request,
-            Authentication authentication
-    ) {
-        User user = getAuthenticatedUser(authentication);
-        return paymentService.createPayment(request, user);
-    }
+   @PostMapping
+public PaymentResponseDTO createPayment(
+        @RequestBody CreatePaymentRequestDTO request,
+        @RequestHeader("Idempotency-Key") String idempotencyKey,
+        Authentication authentication
+) {
+    User user = getAuthenticatedUser(authentication);
+
+    return paymentService.createPayment(
+            request,
+            user,
+            idempotencyKey
+    );
+}
 
     @GetMapping("/{id}")
     public PaymentResponseDTO getPayment(

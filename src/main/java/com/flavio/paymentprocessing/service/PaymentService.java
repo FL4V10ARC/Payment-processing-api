@@ -20,27 +20,54 @@ public class PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final PaymentAuditRepository paymentAuditRepository;
+    private final IdempotencyService idempotencyService;
 
-    public PaymentResponseDTO createPayment(CreatePaymentRequestDTO request, User user) {
+    public PaymentResponseDTO createPayment(
+        CreatePaymentRequestDTO request,
+        User user,
+        String idempotencyKey
+) {
 
-        Payment payment = Payment.builder()
-                .user(user)
-                .amount(request.amount())
-                .description(request.description())
-                .status(PaymentStatus.PENDING)
-                .build();
-
-        Payment savedPayment = paymentRepository.save(payment);
-
-        saveAudit(
-                savedPayment,
-                null,
-                PaymentStatus.PENDING,
-                "Payment created"
-        );
-
-        return mapToResponse(savedPayment);
+    if (idempotencyKey == null || idempotencyKey.isBlank()) {
+        throw new BusinessException("Idempotency-Key header is required");
     }
+
+    String existingPaymentId =
+            idempotencyService.getPaymentId(idempotencyKey);
+
+    if (existingPaymentId != null) {
+
+        Payment existingPayment =
+                findPaymentById(UUID.fromString(existingPaymentId));
+
+        validateOwnership(existingPayment, user);
+
+        return mapToResponse(existingPayment);
+    }
+
+    Payment payment = Payment.builder()
+            .user(user)
+            .amount(request.amount())
+            .description(request.description())
+            .status(PaymentStatus.PENDING)
+            .build();
+
+    Payment savedPayment = paymentRepository.save(payment);
+
+    saveAudit(
+            savedPayment,
+            null,
+            PaymentStatus.PENDING,
+            "Payment created"
+    );
+
+    idempotencyService.savePaymentId(
+            idempotencyKey,
+            savedPayment.getId().toString()
+    );
+
+    return mapToResponse(savedPayment);
+}
 
     public PaymentResponseDTO getPaymentById(UUID paymentId, User user) {
         Payment payment = findPaymentById(paymentId);
