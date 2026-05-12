@@ -1,11 +1,15 @@
 package com.flavio.paymentprocessing.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flavio.paymentprocessing.dto.*;
+import com.flavio.paymentprocessing.entity.OutboxEvent;
 import com.flavio.paymentprocessing.entity.Payment;
 import com.flavio.paymentprocessing.entity.PaymentAudit;
 import com.flavio.paymentprocessing.entity.User;
+import com.flavio.paymentprocessing.enums.OutboxStatus;
 import com.flavio.paymentprocessing.enums.PaymentStatus;
 import com.flavio.paymentprocessing.exception.BusinessException;
+import com.flavio.paymentprocessing.repository.OutboxEventRepository;
 import com.flavio.paymentprocessing.repository.PaymentAuditRepository;
 import com.flavio.paymentprocessing.repository.PaymentRepository;
 import lombok.RequiredArgsConstructor;
@@ -21,53 +25,61 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final PaymentAuditRepository paymentAuditRepository;
     private final IdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
+    private final OutboxEventRepository outboxEventRepository;
 
     public PaymentResponseDTO createPayment(
-        CreatePaymentRequestDTO request,
-        User user,
-        String idempotencyKey
-) {
+            CreatePaymentRequestDTO request,
+            User user,
+            String idempotencyKey
+    ) {
 
-    if (idempotencyKey == null || idempotencyKey.isBlank()) {
-        throw new BusinessException("Idempotency-Key header is required");
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new BusinessException("Idempotency-Key header is required");
+        }
+
+        String existingPaymentId =
+                idempotencyService.getPaymentId(idempotencyKey);
+
+        // 🔥 Já existe pagamento com essa chave
+        if (existingPaymentId != null) {
+
+            Payment existingPayment =
+                    findPaymentById(UUID.fromString(existingPaymentId));
+
+            validateOwnership(existingPayment, user);
+
+            return mapToResponse(existingPayment);
+        }
+
+        // 🔥 Criar novo pagamento
+        Payment payment = Payment.builder()
+                .user(user)
+                .amount(request.amount())
+                .description(request.description())
+                .status(PaymentStatus.PENDING)
+                .build();
+
+        Payment savedPayment = paymentRepository.save(payment);
+
+        saveAudit(
+                savedPayment,
+                null,
+                PaymentStatus.PENDING,
+                "Payment created"
+        );
+
+        // 🔥 Salvar evento na outbox
+        saveOutboxEvent(savedPayment);
+
+        // 🔥 Salvar chave no Redis
+        idempotencyService.savePaymentId(
+                idempotencyKey,
+                savedPayment.getId().toString()
+        );
+
+        return mapToResponse(savedPayment);
     }
-
-    String existingPaymentId =
-            idempotencyService.getPaymentId(idempotencyKey);
-
-    if (existingPaymentId != null) {
-
-        Payment existingPayment =
-                findPaymentById(UUID.fromString(existingPaymentId));
-
-        validateOwnership(existingPayment, user);
-
-        return mapToResponse(existingPayment);
-    }
-
-    Payment payment = Payment.builder()
-            .user(user)
-            .amount(request.amount())
-            .description(request.description())
-            .status(PaymentStatus.PENDING)
-            .build();
-
-    Payment savedPayment = paymentRepository.save(payment);
-
-    saveAudit(
-            savedPayment,
-            null,
-            PaymentStatus.PENDING,
-            "Payment created"
-    );
-
-    idempotencyService.savePaymentId(
-            idempotencyKey,
-            savedPayment.getId().toString()
-    );
-
-    return mapToResponse(savedPayment);
-}
 
     public PaymentResponseDTO getPaymentById(UUID paymentId, User user) {
         Payment payment = findPaymentById(paymentId);
@@ -151,6 +163,41 @@ public class PaymentService {
                 .build();
 
         paymentAuditRepository.save(audit);
+    }
+
+    private void saveOutboxEvent(Payment payment) {
+
+        try {
+
+            PaymentCreatedEvent event =
+                    new PaymentCreatedEvent(
+                            payment.getId(),
+                            payment.getUser().getId(),
+                            payment.getAmount(),
+                            payment.getStatus().name(),
+                            payment.getCorrelationId()
+                    );
+
+            String payload =
+                    objectMapper.writeValueAsString(event);
+
+            OutboxEvent outboxEvent =
+                    OutboxEvent.builder()
+                            .aggregateType("PAYMENT")
+                            .aggregateId(payment.getId())
+                            .eventType("PAYMENT_CREATED")
+                            .payload(payload)
+                            .status(OutboxStatus.PENDING)
+                            .build();
+
+            outboxEventRepository.save(outboxEvent);
+
+        } catch (Exception ex) {
+            throw new RuntimeException(
+                    "Failed to save outbox event",
+                    ex
+            );
+        }
     }
 
     private PaymentResponseDTO mapToResponse(Payment payment) {
